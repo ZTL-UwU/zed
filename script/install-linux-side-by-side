@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+help_info() {
+  cat <<EOF
+Usage: ${0##*/} [options]
+
+Build and install this Zed checkout into ~/.local alongside an existing official Zed installation,
+without overwriting ~/.local/zed.app or ~/.local/bin/zed.
+
+Options:
+  --bin-name <name>        CLI command name to install in ~/.local/bin (default: zed-<channel>)
+  --user-data-dir <dir>    Isolate config, extensions, logs, and databases in <dir>
+  --skip-build             Install an already-built tarball from target/release without rebuilding
+  -h, --help               Display this help and exit
+
+Before running this the first time, ensure build dependencies are installed with ./script/linux.
+EOF
+}
+
+bin_name=""
+user_data_dir=""
+skip_build=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      help_info
+      exit 0
+      ;;
+    --bin-name)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Error: --bin-name requires a value" >&2
+        exit 1
+      fi
+      bin_name="$2"
+      shift 2
+      ;;
+    --user-data-dir)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Error: --user-data-dir requires a value" >&2
+        exit 1
+      fi
+      user_data_dir="$2"
+      shift 2
+      ;;
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    *)
+      echo "Error: Unknown argument: $1" >&2
+      help_info >&2
+      exit 1
+      ;;
+  esac
+done
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+channel="$(tr -d '[:space:]' < crates/zed/RELEASE_CHANNEL)"
+
+case "$channel" in
+  dev)
+    suffix="-dev"
+    app_id="dev.zed.Zed-Dev"
+    ;;
+  nightly)
+    suffix="-nightly"
+    app_id="dev.zed.Zed-Nightly"
+    ;;
+  preview)
+    suffix="-preview"
+    app_id="dev.zed.Zed-Preview"
+    ;;
+  stable)
+    echo "Error: crates/zed/RELEASE_CHANNEL is 'stable', which would overwrite ~/.local/zed.app and dev.zed.Zed.desktop." >&2
+    echo "Set crates/zed/RELEASE_CHANNEL to 'dev', 'nightly', or 'preview' to install alongside official Zed." >&2
+    exit 1
+    ;;
+  *)
+    echo "Error: Unknown release channel '${channel}' in crates/zed/RELEASE_CHANNEL." >&2
+    exit 1
+    ;;
+esac
+
+if [[ -z "$bin_name" ]]; then
+  bin_name="zed${suffix}"
+fi
+
+if [[ "$bin_name" == "zed" ]]; then
+  echo "Error: --bin-name cannot be 'zed' because that would overwrite the official ~/.local/bin/zed launcher." >&2
+  exit 1
+fi
+
+if [[ "$bin_name" == */* ]]; then
+  echo "Error: --bin-name must be a command name without path separators: ${bin_name}" >&2
+  exit 1
+fi
+
+if [[ -n "$user_data_dir" ]]; then
+  user_data_dir="${user_data_dir/#\~/$HOME}"
+fi
+
+arch="$(uname -m)"
+archive="${CARGO_TARGET_DIR:-target}/release/zed-linux-${arch}.tar.gz"
+
+if ! "$skip_build"; then
+  if [[ -z "${REMOTE_SERVER_TARGET:-}" ]] && ! command -v musl-gcc >/dev/null 2>&1; then
+    host_triple="$(rustc --version --verbose | awk '/^host: / { print $2 }')"
+    echo "musl-gcc not found; falling back to REMOTE_SERVER_TARGET=${host_triple} for local remote_server build." >&2
+    export REMOTE_SERVER_TARGET="$host_triple"
+  fi
+  export ZED_UPDATE_EXPLANATION="You need to fetch and rebuild zed in ${repo_root}"
+  ./script/bundle-linux --skip-sentry
+fi
+
+if [[ ! -f "$archive" ]]; then
+  echo "Error: Expected release archive not found at ${archive}" >&2
+  exit 1
+fi
+
+install_dir="$HOME/.local/zed${suffix}.app"
+rm -rf "$install_dir"
+mkdir -p "$HOME/.local"
+tar -xzf "$archive" -C "$HOME/.local/"
+
+zed_editor="${install_dir}/libexec/zed-editor"
+if [[ -f "$zed_editor" ]] && command -v ldd >/dev/null 2>&1; then
+  missing="$(ldd "$zed_editor" 2>/dev/null | sed -n 's/^[[:space:]]*\(.*\) => not found$/\1/p')"
+  if [[ -n "$missing" ]]; then
+    echo "Warning: your system is missing libraries that Zed needs:" >&2
+    echo "$missing" | sed 's/^/    /' >&2
+    echo "Install them with your package manager, or Zed will fail to start." >&2
+  fi
+fi
+
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
+
+app_bin="${install_dir}/bin/zed"
+cli_path="$HOME/.local/bin/${bin_name}"
+rm -f "$cli_path"
+
+if [[ -n "$user_data_dir" ]]; then
+  printf -v escaped_app_bin '%q' "$app_bin"
+  printf -v escaped_user_data_dir '%q' "$user_data_dir"
+  cat > "$cli_path" <<EOF
+#!/usr/bin/env bash
+exec ${escaped_app_bin} --user-data-dir ${escaped_user_data_dir} "\$@"
+EOF
+  chmod +x "$cli_path"
+  desktop_exec="$cli_path"
+else
+  ln -sf "$app_bin" "$cli_path"
+  desktop_exec="$app_bin"
+fi
+
+desktop_file_path="$HOME/.local/share/applications/${app_id}.desktop"
+cp "${install_dir}/share/applications/${app_id}.desktop" "$desktop_file_path"
+
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+icon_path_escaped="$(escape_sed_replacement "${install_dir}/share/icons/hicolor/512x512/apps/zed.png")"
+desktop_exec_escaped="$(escape_sed_replacement "$desktop_exec")"
+
+sed -i \
+  -e "s|^Icon=zed$|Icon=${icon_path_escaped}|g" \
+  -e "s|^TryExec=zed$|TryExec=${desktop_exec_escaped}|g" \
+  -e "s|^Exec=zed|Exec=${desktop_exec_escaped}|g" \
+  "$desktop_file_path"
+chmod +x "$desktop_file_path"
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+fi
+
+echo "Installed Zed (${channel}) side-by-side:"
+echo "  App bundle:    ${install_dir}"
+echo "  CLI launcher:  ${cli_path}"
+echo "  Desktop entry: ${desktop_file_path}"
+if [[ -n "$user_data_dir" ]]; then
+  echo "  User data dir: ${user_data_dir}"
+fi
+
+if [[ "$(command -v "$bin_name" 2>/dev/null || true)" == "$cli_path" ]]; then
+  echo "Run with '${bin_name}'."
+else
+  echo "Add ~/.local/bin to your PATH to run '${bin_name}', or invoke '${cli_path}' directly."
+fi
