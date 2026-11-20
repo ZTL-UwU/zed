@@ -45,7 +45,7 @@ The following VS Code settings are automatically imported when you use **Import 
 | `editor.cursorStyle`                        | `cursor_shape`                                 |
 | `editor.cursorBlinking`                     | `cursor_blink`                                 |
 | `editor.renderLineHighlight`                | `current_line_highlight`                       |
-| `editor.lineNumbers`                        | `gutter.line_numbers`, `relative_line_numbers` |
+| `editor.lineNumbers`                        | `gutter.line_numbers`, `gutter.line_number_interval`, `relative_line_numbers` |
 | `editor.showFoldingControls`                | `gutter.folds`                                 |
 | `editor.minimap.enabled`                    | `minimap.show`                                 |
 | `editor.minimap.autohide`                   | `minimap.show`                                 |

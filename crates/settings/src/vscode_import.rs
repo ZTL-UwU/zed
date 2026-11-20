@@ -357,8 +357,12 @@ impl VsCodeSettings {
     fn gutter_content(&self) -> Option<GutterContent> {
         skip_default(GutterContent {
             line_numbers: self.read_enum("editor.lineNumbers", |s| match s {
-                "on" | "relative" => Some(true),
+                "on" | "relative" | "interval" => Some(true),
                 "off" => Some(false),
+                _ => None,
+            }),
+            line_number_interval: self.read_enum("editor.lineNumbers", |s| match s {
+                "interval" => std::num::NonZeroU32::new(10),
                 _ => None,
             }),
             min_line_number_digits: None,
@@ -1655,5 +1659,57 @@ mod tests {
             None
         );
         assert_eq!(imported_soft_wrap_indent("{}"), None);
+    }
+
+    #[test]
+    fn test_import_line_numbers() {
+        let import = |content: &str| {
+            VsCodeSettings::from_str(content, VsCodeSettingsSource::VsCode)
+                .unwrap()
+                .settings_content()
+                .editor
+        };
+
+        let on = import(r#"{ "editor.lineNumbers": "on" }"#);
+        assert_eq!(on.gutter.as_ref().and_then(|g| g.line_numbers), Some(true));
+        assert_eq!(
+            on.gutter.as_ref().and_then(|g| g.line_number_interval),
+            None
+        );
+        assert_eq!(on.relative_line_numbers, None);
+
+        let off = import(r#"{ "editor.lineNumbers": "off" }"#);
+        assert_eq!(
+            off.gutter.as_ref().and_then(|g| g.line_numbers),
+            Some(false)
+        );
+        assert_eq!(
+            off.gutter.as_ref().and_then(|g| g.line_number_interval),
+            None
+        );
+
+        let relative = import(r#"{ "editor.lineNumbers": "relative" }"#);
+        assert_eq!(
+            relative.gutter.as_ref().and_then(|g| g.line_numbers),
+            Some(true)
+        );
+        assert_eq!(
+            relative.relative_line_numbers,
+            Some(RelativeLineNumbers::Enabled)
+        );
+
+        let interval = import(r#"{ "editor.lineNumbers": "interval" }"#);
+        assert_eq!(
+            interval.gutter.as_ref().and_then(|g| g.line_numbers),
+            Some(true)
+        );
+        assert_eq!(
+            interval
+                .gutter
+                .as_ref()
+                .and_then(|g| g.line_number_interval),
+            std::num::NonZeroU32::new(10)
+        );
+        assert_eq!(interval.relative_line_numbers, None);
     }
 }

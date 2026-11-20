@@ -1404,6 +1404,7 @@ Numbers from `0` to `106`, with `0` disabling contrast adjustment.
 {
   "gutter": {
     "line_numbers": true,
+    "line_number_interval": 1,
     "runnables": true,
     "bookmarks": true,
     "breakpoints": true,
@@ -1417,6 +1418,7 @@ Numbers from `0` to `106`, with `0` disabling contrast adjustment.
 **Options**
 
 - `line_numbers`: Whether to show line numbers in the gutter
+- `line_number_interval`: Interval at which to show line numbers in the gutter. When greater than `1`, line numbers are shown on every Nth line and on cursor lines
 - `runnables`: Whether to show runnable buttons in the gutter
 - `bookmarks`: Whether to show bookmarks in the gutter
 - `breakpoints`: Whether to show breakpoints in the gutter

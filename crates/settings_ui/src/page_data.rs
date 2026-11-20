@@ -2338,7 +2338,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn gutter_section() -> [SettingsPageItem; 10] {
+    fn gutter_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Gutter"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2360,6 +2360,30 @@ fn editor_page() -> SettingsPage {
                             .gutter
                             .get_or_insert_default()
                             .line_numbers = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Line Number Interval",
+                description: "Interval at which to show line numbers in the gutter. When greater than 1, line numbers are shown on every Nth line and on cursor lines.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("gutter.line_number_interval"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .gutter
+                            .as_ref()
+                            .and_then(|gutter| gutter.line_number_interval.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .gutter
+                            .get_or_insert_default()
+                            .line_number_interval = value;
                     },
                 }),
                 metadata: None,

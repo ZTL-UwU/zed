@@ -242,9 +242,11 @@ impl EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<StickyHeaders> {
+        let gutter_settings = EditorSettings::get_global(cx).gutter;
         let show_line_numbers = snapshot
             .show_line_numbers
-            .unwrap_or_else(|| EditorSettings::get_global(cx).gutter.line_numbers);
+            .unwrap_or(gutter_settings.line_numbers);
+        let line_number_interval = gutter_settings.line_number_interval.get();
 
         let rows = Self::sticky_headers(self.editor.read(cx), snapshot);
 
@@ -266,24 +268,34 @@ impl EditorElement {
                 cx,
             );
 
-            let line_number = show_line_numbers.then(|| {
-                let start_display_row = start_point.to_display_point(snapshot).row();
-                let relative_number = relative_to
-                    .filter(|_| relative_line_numbers != RelativeLineNumbers::Disabled)
-                    .map(|base| {
-                        snapshot.relative_line_delta(
-                            base,
-                            start_display_row,
-                            relative_line_numbers == RelativeLineNumbers::Wrapped,
-                        )
-                    });
-                let number = relative_number
-                    .filter(|&delta| delta != 0)
-                    .map(|delta| delta.unsigned_abs() as u32)
-                    .unwrap_or(start_point.row + 1);
-                let color = cx.theme().colors().editor_line_number;
-                self.shape_line_number(SharedString::from(number.to_string()), color, window)
-            });
+            let line_number = show_line_numbers
+                .then(|| {
+                    let start_display_row = start_point.to_display_point(snapshot).row();
+                    let relative_number = relative_to
+                        .filter(|_| relative_line_numbers != RelativeLineNumbers::Disabled)
+                        .map(|base| {
+                            snapshot.relative_line_delta(
+                                base,
+                                start_display_row,
+                                relative_line_numbers == RelativeLineNumbers::Wrapped,
+                            )
+                        });
+                    let is_active = relative_to == Some(start_display_row);
+                    let number = relative_number
+                        .filter(|&delta| delta != 0)
+                        .map(|delta| delta.unsigned_abs() as u32)
+                        .unwrap_or(start_point.row + 1);
+                    if !is_active && number % line_number_interval != 0 {
+                        return None;
+                    }
+                    let color = cx.theme().colors().editor_line_number;
+                    Some(self.shape_line_number(
+                        SharedString::from(number.to_string()),
+                        color,
+                        window,
+                    ))
+                })
+                .flatten();
 
             self.populate_point_diagnostics(
                 snapshot,

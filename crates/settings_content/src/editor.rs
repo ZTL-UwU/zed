@@ -529,6 +529,11 @@ pub struct GutterContent {
     ///
     /// Default: true
     pub line_numbers: Option<bool>,
+    /// Interval at which to show line numbers in the gutter.
+    /// When greater than 1, line numbers are shown on every Nth line and on cursor lines.
+    ///
+    /// Default: 1
+    pub line_number_interval: Option<num::NonZeroU32>,
     /// Minimum number of characters to reserve space for in the gutter.
     ///
     /// Default: 4

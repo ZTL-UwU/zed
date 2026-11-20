@@ -101,6 +101,8 @@ use workspace::{
 #[derive(Clone, Copy, Default)]
 struct LineHighlightSpec {
     selection: bool,
+    cursor_head: bool,
+    cursor_head_line_start: bool,
     breakpoint: bool,
     _active_stack_frame: bool,
 }
@@ -956,6 +958,24 @@ impl EditorElement {
                             .entry(DisplayRow(row))
                             .or_insert_with(LineHighlightSpec::default);
                         contains_non_empty_selection.selection |= !is_empty;
+                    }
+                    let head_row = layout.head.row();
+                    if head_row >= start_row && head_row <= end_row {
+                        active_rows
+                            .entry(head_row)
+                            .or_insert_with(LineHighlightSpec::default)
+                            .cursor_head = true;
+                    }
+                    let head_line_start_row = snapshot
+                        .display_snapshot
+                        .prev_line_boundary(layout.head.to_point(&snapshot.display_snapshot))
+                        .1
+                        .row();
+                    if head_line_start_row >= start_row && head_line_start_row <= end_row {
+                        active_rows
+                            .entry(head_line_start_row)
+                            .or_insert_with(LineHighlightSpec::default)
+                            .cursor_head_line_start = true;
                     }
                     layouts.push(layout);
                 }
@@ -2863,13 +2883,15 @@ impl EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Arc<HashMap<MultiBufferRow, LineNumberLayout>> {
+        let gutter_settings = EditorSettings::get_global(cx).gutter;
         let include_line_numbers = gutter
             .snapshot
             .show_line_numbers
-            .unwrap_or_else(|| EditorSettings::get_global(cx).gutter.line_numbers);
+            .unwrap_or(gutter_settings.line_numbers);
         if !include_line_numbers {
             return Arc::default();
         }
+        let line_number_interval = gutter_settings.line_number_interval.get();
 
         let relative = self.editor.read(cx).relative_line_numbers(cx);
 
@@ -2910,15 +2932,31 @@ impl EditorElement {
                 }
 
                 let number = relative_number.unwrap_or(&non_relative_number);
+                let spec = active_rows.get(&display_row);
+                let is_cursor_head = spec.is_some_and(|spec| {
+                    if relative.wrapped() {
+                        spec.cursor_head
+                    } else {
+                        spec.cursor_head || spec.cursor_head_line_start
+                    }
+                });
+                let is_breakpoint = spec.is_some_and(|spec| spec.breakpoint);
+                if line_number_interval > 1
+                    && !is_cursor_head
+                    && !is_breakpoint
+                    && *number % line_number_interval != 0
+                {
+                    return None;
+                }
                 write!(&mut line_number, "{number}").unwrap();
 
-                let spec = active_rows.get(&display_row);
-                let color = LineNumberStyle::new(
-                    spec.is_some(),
-                    spec.is_some_and(|spec| spec.breakpoint),
-                    row_info.diff_status,
-                )
-                .color(cx.theme().colors());
+                let is_active = if line_number_interval > 1 {
+                    is_cursor_head
+                } else {
+                    spec.is_some()
+                };
+                let color = LineNumberStyle::new(is_active, is_breakpoint, row_info.diff_status)
+                    .color(cx.theme().colors());
 
                 let shaped_line =
                     self.shape_line_number(SharedString::from(&line_number), color, window);
@@ -12807,6 +12845,193 @@ mod tests {
         assert!(
             layouts.get(&MultiBufferRow(DELETED_LINE)).is_none(),
             "Deleted line should not have a line number"
+        );
+    }
+
+    #[gpui::test]
+    fn test_layout_line_numbers_interval(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        cx.update(|cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .editor
+                        .gutter
+                        .get_or_insert_default()
+                        .line_number_interval = std::num::NonZeroU32::new(10);
+                });
+            });
+        });
+
+        let line_count: u32 = 35;
+        let window = cx.add_window(|window, cx| {
+            let buffer = MultiBuffer::build_simple(&sample_text(line_count as usize, 6, 'a'), cx);
+            Editor::new(EditorMode::full(), buffer, None, window, cx)
+        });
+
+        let editor = window.root(cx).unwrap();
+        let style = editor.update(cx, |editor, cx| editor.style(cx).clone());
+        let line_height = window
+            .update(cx, |_, window, _| {
+                style.text.line_height_in_pixels(window.rem_size())
+            })
+            .unwrap();
+        let element = EditorElement::new(&editor, style);
+        let snapshot = window
+            .update(cx, |editor, window, cx| editor.snapshot(window, cx))
+            .unwrap();
+
+        let row_infos: Vec<RowInfo> = (0..line_count)
+            .map(|row| RowInfo {
+                buffer_row: Some(row),
+                ..Default::default()
+            })
+            .collect();
+        let gutter = Gutter {
+            range: DisplayRow(0)..DisplayRow(line_count),
+            row_infos: &row_infos,
+            ..test_gutter(line_height, &snapshot)
+        };
+
+        // Multi-line selection from line 12 to line 26 should only display
+        // interval multiples (10, 20, 30) and the cursor head line (26).
+        let local_selections = window
+            .update(cx, |editor, window, cx| {
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                    selections.select_ranges([Point::new(11, 0)..Point::new(25, 3)]);
+                });
+                editor.selections.all::<Point>(&editor.display_snapshot(cx))
+            })
+            .unwrap();
+        let (_, mut active_rows, newest_selection_head) = cx
+            .update_window(*window, |_, window, cx| {
+                element.layout_selections(
+                    Anchor::min(),
+                    Anchor::max(),
+                    &local_selections,
+                    &snapshot,
+                    DisplayRow(0),
+                    DisplayRow(line_count),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+        assert_eq!(newest_selection_head.map(|head| head.row()), Some(DisplayRow(25)));
+        assert!(active_rows[&DisplayRow(19)].selection);
+        assert!(!active_rows[&DisplayRow(19)].cursor_head);
+        assert!(active_rows[&DisplayRow(25)].cursor_head);
+
+        let layouts = cx
+            .update_window(*window, |_, window, cx| {
+                element.layout_line_numbers(
+                    &gutter,
+                    &active_rows,
+                    Some(DisplayRow(25)),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+
+        let rendered: BTreeMap<u32, String> = layouts
+            .iter()
+            .map(|(row, layout)| (row.0, layout.segments[0].shaped_line.text.to_string()))
+            .collect();
+        assert_eq!(
+            rendered,
+            BTreeMap::from([
+                (9, "10".to_string()),
+                (19, "20".to_string()),
+                (25, "26".to_string()),
+                (29, "30".to_string()),
+            ])
+        );
+
+        // Multi-cursor: adding a second cursor head on line 5 shows line 5 as well.
+        active_rows.insert(
+            DisplayRow(4),
+            LineHighlightSpec {
+                cursor_head: true,
+                cursor_head_line_start: true,
+                ..Default::default()
+            },
+        );
+        let layouts = cx
+            .update_window(*window, |_, window, cx| {
+                element.layout_line_numbers(
+                    &gutter,
+                    &active_rows,
+                    Some(DisplayRow(25)),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+        let rendered: BTreeMap<u32, String> = layouts
+            .iter()
+            .map(|(row, layout)| (row.0, layout.segments[0].shaped_line.text.to_string()))
+            .collect();
+        assert_eq!(
+            rendered,
+            BTreeMap::from([
+                (4, "5".to_string()),
+                (9, "10".to_string()),
+                (19, "20".to_string()),
+                (25, "26".to_string()),
+                (29, "30".to_string()),
+            ])
+        );
+
+        cx.update(|cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.editor.relative_line_numbers =
+                        Some(settings::RelativeLineNumbers::Enabled);
+                    settings
+                        .editor
+                        .gutter
+                        .get_or_insert_default()
+                        .line_number_interval = std::num::NonZeroU32::new(5);
+                });
+            });
+        });
+
+        let mut active_rows = BTreeMap::new();
+        active_rows.insert(
+            DisplayRow(11),
+            LineHighlightSpec {
+                cursor_head: true,
+                cursor_head_line_start: true,
+                ..Default::default()
+            },
+        );
+        let layouts = cx
+            .update_window(*window, |_, window, cx| {
+                element.layout_line_numbers(
+                    &gutter,
+                    &active_rows,
+                    Some(DisplayRow(11)),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+        let rendered: BTreeMap<u32, String> = layouts
+            .iter()
+            .map(|(row, layout)| (row.0, layout.segments[0].shaped_line.text.to_string()))
+            .collect();
+        assert_eq!(
+            rendered,
+            BTreeMap::from([
+                (1, "10".to_string()),
+                (6, "5".to_string()),
+                (11, "12".to_string()),
+                (16, "5".to_string()),
+                (21, "10".to_string()),
+                (26, "15".to_string()),
+                (31, "20".to_string()),
+            ])
         );
     }
 
