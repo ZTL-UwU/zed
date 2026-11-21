@@ -3,7 +3,7 @@ use gpui::{
 };
 use ui::prelude::*;
 use workspace::{
-    ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+    Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
     item::{HighlightedText, ItemEvent, ItemHandle},
 };
 
@@ -50,8 +50,8 @@ impl Render for Breadcrumbs {
         let element = h_flex()
             .id("breadcrumb-container")
             .flex_grow_1()
-            .h_8()
-            .overflow_x_scroll()
+            .h(Toolbar::primary_row_height())
+            .pl(DynamicSpacing::Base08.rems(cx))
             .text_ui(cx);
 
         let Some(active_item) = self.active_item.as_ref() else {
@@ -65,15 +65,17 @@ impl Render for Breadcrumbs {
         let prefix_element = active_item.breadcrumb_prefix(window, cx);
 
         if let Some(render_fn) = cx.try_global::<RenderBreadcrumbText>() {
-            (render_fn.0)(
-                segments,
-                breadcrumb_font,
-                prefix_element,
-                active_item.as_ref(),
-                false,
-                window,
-                cx,
-            )
+            element
+                .child((render_fn.0)(
+                    segments,
+                    breadcrumb_font,
+                    prefix_element,
+                    active_item.as_ref(),
+                    false,
+                    window,
+                    cx,
+                ))
+                .into_any_element()
         } else {
             element.into_any_element()
         }

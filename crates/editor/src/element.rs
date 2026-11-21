@@ -7154,7 +7154,7 @@ impl Gutter<'_> {
 }
 
 pub fn render_breadcrumb_text(
-    mut segments: Vec<HighlightedText>,
+    segments: Vec<HighlightedText>,
     breadcrumb_font: Option<Font>,
     prefix: Option<gpui::AnyElement>,
     active_item: &dyn ItemHandle,
@@ -7164,7 +7164,42 @@ pub fn render_breadcrumb_text(
 ) -> gpui::AnyElement {
     const MAX_SEGMENTS: usize = 12;
 
-    let element = h_flex().flex_grow_1().text_ui(cx);
+    // `StyledText` takes its font size from the enclosing element at layout time, not from
+    // `text_style`, so the toolbar's smaller size has to be set on the container.
+    let element = h_flex().flex_grow_1().map(|this| {
+        if multibuffer_header {
+            this.text_ui(cx)
+        } else {
+            this.text_size(rems_from_px(12_f32))
+        }
+    });
+
+    // Each directory of the file path gets its own segment, so that the file icon can sit
+    // right before the file name.
+    let mut segments = segments
+        .into_iter()
+        .map(|segment| (segment, false))
+        .collect::<Vec<_>>();
+    if !multibuffer_header
+        && active_item.project_path(cx).is_some()
+        && let Some((first_segment, _)) = segments.first()
+        && first_segment.highlights.is_empty()
+    {
+        let path = segments.remove(0).0.text;
+        let mut components = path
+            .split(['/', std::path::MAIN_SEPARATOR])
+            .filter(|component| !component.is_empty())
+            .map(|component| HighlightedText {
+                text: SharedString::from(component.to_string()),
+                highlights: Vec::new(),
+            })
+            .map(|component| (component, false))
+            .collect::<Vec<_>>();
+        if let Some((_, is_file_name)) = components.last_mut() {
+            *is_file_name = true;
+        }
+        segments.splice(0..0, components);
+    }
 
     let prefix_end_ix = cmp::min(segments.len(), MAX_SEGMENTS / 2);
     let suffix_start_ix = cmp::max(
@@ -7175,38 +7210,66 @@ pub fn render_breadcrumb_text(
     if suffix_start_ix > prefix_end_ix {
         segments.splice(
             prefix_end_ix..suffix_start_ix,
-            Some(HighlightedText {
-                text: "⋯".into(),
-                highlights: vec![],
-            }),
+            Some((
+                HighlightedText {
+                    text: "⋯".into(),
+                    highlights: vec![],
+                },
+                false,
+            )),
         );
     }
 
-    let highlighted_segments = segments.into_iter().enumerate().map(|(index, segment)| {
-        let mut text_style = window.text_style();
-        if let Some(font) = &breadcrumb_font {
-            text_style.font_family = font.family.clone();
-            text_style.font_features = font.features.clone();
-            text_style.font_style = font.style;
-            text_style.font_weight = font.weight;
-        }
-        text_style.color = Color::Muted.color(cx);
+    let mut text_style = window.text_style();
+    if let Some(font) = &breadcrumb_font {
+        text_style.font_family = font.family.clone();
+        text_style.font_features = font.features.clone();
+        text_style.font_style = font.style;
+        text_style.font_weight = font.weight;
+    }
+    text_style.color = Color::Muted.color(cx);
 
-        if index == 0
-            && !workspace::TabBarSettings::get_global(cx).show
-            && active_item.is_dirty(cx)
-            && let Some(styled_element) = apply_dirty_filename_style(&segment, &text_style, cx)
-        {
-            return styled_element;
-        }
+    let highlight_dirty_file_name =
+        !workspace::TabBarSettings::get_global(cx).show && active_item.is_dirty(cx);
 
-        StyledText::new(segment.text.replace('\n', " "))
-            .with_default_highlights(&text_style, segment.highlights)
-            .into_any()
-    });
+    let mut prefix = prefix;
+    let highlighted_segments = segments
+        .into_iter()
+        .enumerate()
+        .map(|(index, (segment, is_file_name))| {
+            if is_file_name {
+                let mut file_name_style = text_style.clone();
+                if highlight_dirty_file_name {
+                    file_name_style.font_weight = FontWeight::BOLD;
+                    file_name_style.color = Color::Default.color(cx);
+                }
+                let file_name = StyledText::new(segment.text)
+                    .with_default_highlights(&file_name_style, segment.highlights);
+                return h_flex()
+                    .gap_1()
+                    .children(prefix.take())
+                    .child(file_name)
+                    .into_any_element();
+            }
 
-    let breadcrumbs = Itertools::intersperse_with(highlighted_segments, || {
-        Label::new("›").color(Color::Placeholder).into_any_element()
+            if index == 0
+                && highlight_dirty_file_name
+                && let Some(styled_element) = apply_dirty_filename_style(&segment, &text_style, cx)
+            {
+                return styled_element;
+            }
+
+            StyledText::new(segment.text.replace('\n', " "))
+                .with_default_highlights(&text_style, segment.highlights)
+                .into_any()
+        })
+        .collect::<Vec<_>>();
+
+    let breadcrumbs = Itertools::intersperse_with(highlighted_segments.into_iter(), || {
+        Icon::new(IconName::ChevronRight)
+            .size(IconSize::XSmall)
+            .color(Color::Muted)
+            .into_any_element()
     });
 
     let breadcrumbs_stack = h_flex()
@@ -12917,20 +12980,17 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(newest_selection_head.map(|head| head.row()), Some(DisplayRow(25)));
+        assert_eq!(
+            newest_selection_head.map(|head| head.row()),
+            Some(DisplayRow(25))
+        );
         assert!(active_rows[&DisplayRow(19)].selection);
         assert!(!active_rows[&DisplayRow(19)].cursor_head);
         assert!(active_rows[&DisplayRow(25)].cursor_head);
 
         let layouts = cx
             .update_window(*window, |_, window, cx| {
-                element.layout_line_numbers(
-                    &gutter,
-                    &active_rows,
-                    Some(DisplayRow(25)),
-                    window,
-                    cx,
-                )
+                element.layout_line_numbers(&gutter, &active_rows, Some(DisplayRow(25)), window, cx)
             })
             .unwrap();
 
@@ -12959,13 +13019,7 @@ mod tests {
         );
         let layouts = cx
             .update_window(*window, |_, window, cx| {
-                element.layout_line_numbers(
-                    &gutter,
-                    &active_rows,
-                    Some(DisplayRow(25)),
-                    window,
-                    cx,
-                )
+                element.layout_line_numbers(&gutter, &active_rows, Some(DisplayRow(25)), window, cx)
             })
             .unwrap();
         let rendered: BTreeMap<u32, String> = layouts
@@ -13008,13 +13062,7 @@ mod tests {
         );
         let layouts = cx
             .update_window(*window, |_, window, cx| {
-                element.layout_line_numbers(
-                    &gutter,
-                    &active_rows,
-                    Some(DisplayRow(11)),
-                    window,
-                    cx,
-                )
+                element.layout_line_numbers(&gutter, &active_rows, Some(DisplayRow(11)), window, cx)
             })
             .unwrap();
         let rendered: BTreeMap<u32, String> = layouts

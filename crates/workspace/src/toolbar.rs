@@ -115,28 +115,41 @@ impl Render for Toolbar {
 
         let has_left_items = self.left_items().count() > 0;
         let has_right_items = self.right_items().count() > 0;
+        let has_primary_items = has_left_items || has_right_items;
+        let has_secondary_items = self.secondary_items().next().is_some();
 
+        // The primary row has no border, to look like VS Code's breadcrumbs bar. Its top padding
+        // matches the editor's top padding so the row sits centered between the tabs and the code.
         v_flex()
             .group("toolbar")
             .relative()
-            .py(DynamicSpacing::Base06.rems(cx))
             .px(DynamicSpacing::Base08.rems(cx))
-            .when(has_left_items || has_right_items, |this| {
-                this.gap(DynamicSpacing::Base06.rems(cx))
+            .map(|this| {
+                if has_primary_items {
+                    this.pt(DynamicSpacing::Base04.px(cx))
+                        .when(has_secondary_items, |this| {
+                            this.gap(DynamicSpacing::Base06.rems(cx))
+                                .pb(DynamicSpacing::Base06.rems(cx))
+                        })
+                } else {
+                    this.py(DynamicSpacing::Base06.rems(cx))
+                }
             })
-            .border_b_1()
-            .border_color(cx.theme().colors().border_variant)
+            .when(has_secondary_items, |this| {
+                this.border_b_1()
+                    .border_color(cx.theme().colors().border_variant)
+            })
             .bg(cx.theme().colors().toolbar_background)
-            .when(has_left_items || has_right_items, |this| {
+            .when(has_primary_items, |this| {
                 this.child(
                     h_flex()
+                        .min_h(Toolbar::primary_row_height())
                         .items_start()
                         .justify_between()
                         .gap(DynamicSpacing::Base08.rems(cx))
                         .when(has_left_items, |this| {
                             this.child(
                                 h_flex()
-                                    .min_h_8()
                                     .flex_auto()
                                     .justify_start()
                                     .overflow_x_hidden()
@@ -146,7 +159,7 @@ impl Render for Toolbar {
                         .when(has_right_items, |this| {
                             this.child(
                                 h_flex()
-                                    .h_8()
+                                    .h(Toolbar::primary_row_height())
                                     .flex_row_reverse()
                                     .when(has_left_items, |this| this.flex_none())
                                     .justify_end()
@@ -166,6 +179,10 @@ impl Default for Toolbar {
 }
 
 impl Toolbar {
+    pub fn primary_row_height() -> Rems {
+        rems_from_px(24_f32)
+    }
+
     pub fn new() -> Self {
         Self {
             active_item: None,

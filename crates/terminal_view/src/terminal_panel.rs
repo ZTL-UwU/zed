@@ -31,7 +31,7 @@ use workspace::{
     ActivatePaneUp, ActivatePreviousPane, DraggedTab, ItemId, MoveItemToPane,
     MoveItemToPaneInDirection, MovePaneDown, MovePaneLeft, MovePaneRight, MovePaneUp, Pane,
     PaneGroup, SplitDirection, SplitDown, SplitLeft, SplitMode, SplitRight, SplitUp, SwapPaneDown,
-    SwapPaneLeft, SwapPaneRight, SwapPaneUp, ToggleZoom, Workspace,
+    SwapPaneLeft, SwapPaneRight, SwapPaneUp, TabBarPlacement, ToggleZoom, Workspace,
     dock::{DockPosition, Panel, PanelEvent, PanelHandle},
     item::SerializableItem,
     move_active_item, pane,
@@ -126,21 +126,11 @@ impl TerminalPanel {
     ) {
         let assistant_enabled = self.assistant_enabled;
         terminal_pane.update(cx, |pane, cx| {
-            pane.set_render_tab_bar_buttons(cx, move |pane, window, cx| {
+            pane.set_render_tab_bar_buttons(cx, move |pane, _window, cx| {
                 let split_context = pane
                     .active_item()
                     .and_then(|item| item.downcast::<TerminalView>())
                     .map(|terminal_view| terminal_view.read(cx).focus_handle.clone());
-                let has_focused_rename_editor = pane
-                    .active_item()
-                    .and_then(|item| item.downcast::<TerminalView>())
-                    .is_some_and(|view| view.read(cx).rename_editor_is_focused(window, cx));
-                if !pane.has_focus(window, cx)
-                    && !pane.context_menu_focused(window, cx)
-                    && !has_focused_rename_editor
-                {
-                    return (None, None);
-                }
                 let focus_handle = pane.focus_handle(cx);
                 let right_children = h_flex()
                     .gap(DynamicSpacing::Base02.rems(cx))
@@ -480,6 +470,11 @@ impl TerminalPanel {
                 cx.notify();
             }
             pane::Event::AddItem { item } => {
+                if let Some(terminal_view) = item.downcast::<TerminalView>() {
+                    terminal_view.update(cx, |terminal_view, cx| {
+                        terminal_view.set_content_top_padding(TERMINAL_PANEL_CONTENT_TOP_PADDING, cx)
+                    });
+                }
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.update(cx, |workspace, cx| {
                         item.added_to_pane(workspace, pane.clone(), window, cx);
@@ -1319,6 +1314,8 @@ fn is_enabled_in_workspace(workspace: &Workspace, cx: &App) -> bool {
     workspace.project().read(cx).supports_terminal(cx)
 }
 
+const TERMINAL_PANEL_CONTENT_TOP_PADDING: Rems = Rems(0.5);
+
 pub fn new_terminal_pane(
     workspace: WeakEntity<Workspace>,
     project: Entity<Project>,
@@ -1340,7 +1337,15 @@ pub fn new_terminal_pane(
         );
         pane.set_zoomed(zoomed, cx);
         pane.display_nav_history_buttons(None);
-        pane.set_should_display_tab_bar(|_, _| true);
+        pane.set_tab_bar_placement(TabBarPlacement::Right, cx);
+        pane.set_should_display_tab_bar(|pane, _, cx| {
+            // The rename editor is rendered inside the tab, so a lone terminal needs its tab while renaming.
+            pane.items_len() > 1
+                || pane
+                    .active_item()
+                    .and_then(|item| item.downcast::<TerminalView>())
+                    .is_some_and(|terminal_view| terminal_view.read(cx).is_renaming())
+        });
         pane.set_zoom_out_on_close(false);
 
         let split_closure_terminal_panel = terminal_panel.downgrade();

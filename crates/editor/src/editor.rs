@@ -12791,7 +12791,24 @@ impl Focusable for Editor {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        EditorElement::new(&cx.entity(), self.create_style(cx))
+        let style = self.create_style(cx);
+        let fills_container = matches!(
+            self.mode,
+            EditorMode::Full {
+                sizing_behavior: SizingBehavior::Default | SizingBehavior::ExcludeOverscrollMargin,
+                ..
+            }
+        );
+        if fills_container {
+            div()
+                .size_full()
+                .pt(DynamicSpacing::Base04.px(cx))
+                .bg(style.background)
+                .child(EditorElement::new(&cx.entity(), style))
+                .into_any_element()
+        } else {
+            EditorElement::new(&cx.entity(), style).into_any_element()
+        }
     }
 }
 

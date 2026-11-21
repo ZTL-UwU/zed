@@ -419,7 +419,8 @@ pub struct Pane {
     can_split_predicate:
         Option<Arc<dyn Fn(&mut Self, &dyn Any, &mut Window, &mut Context<Self>) -> bool>>,
     can_toggle_zoom: bool,
-    should_display_tab_bar: Rc<dyn Fn(&Window, &mut Context<Pane>) -> bool>,
+    should_display_tab_bar: Rc<dyn Fn(&Pane, &Window, &App) -> bool>,
+    tab_bar_placement: TabBarPlacement,
     should_display_welcome_page: bool,
     render_tab_bar_buttons: Rc<
         dyn Fn(
@@ -517,6 +518,15 @@ pub struct TagStackEntry {
     pub target: NavigationEntry,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabBarPlacement {
+    #[default]
+    Top,
+    /// Tabs are listed vertically to the right of the active item, and the tab bar buttons
+    /// float over the item's top-right corner instead.
+    Right,
+}
+
 #[derive(Clone)]
 pub struct DraggedTab {
     pub pane: Entity<Pane>,
@@ -601,7 +611,8 @@ impl Pane {
             can_drop_predicate,
             can_split_predicate: None,
             can_toggle_zoom: true,
-            should_display_tab_bar: Rc::new(|_, cx| TabBarSettings::get_global(cx).show),
+            should_display_tab_bar: Rc::new(|_, _, cx| TabBarSettings::get_global(cx).show),
+            tab_bar_placement: TabBarPlacement::default(),
             should_display_welcome_page: false,
             render_tab_bar_buttons: Rc::new(default_render_tab_bar_buttons),
             render_tab_bar: Rc::new(Self::render_tab_bar),
@@ -825,9 +836,14 @@ impl Pane {
 
     pub fn set_should_display_tab_bar<F>(&mut self, should_display_tab_bar: F)
     where
-        F: 'static + Fn(&Window, &mut Context<Pane>) -> bool,
+        F: 'static + Fn(&Pane, &Window, &App) -> bool,
     {
         self.should_display_tab_bar = Rc::new(should_display_tab_bar);
+    }
+
+    pub fn set_tab_bar_placement(&mut self, placement: TabBarPlacement, cx: &mut Context<Self>) {
+        self.tab_bar_placement = placement;
+        cx.notify();
     }
 
     pub fn set_should_display_welcome_page(&mut self, should_display_welcome_page: bool) {
@@ -2888,6 +2904,7 @@ impl Pane {
         let is_last_item = ix == self.items.len() - 1;
         let is_pinned = self.is_tab_pinned(ix);
         let position_relative_to_active_item = ix.cmp(&self.active_item_index);
+        let is_vertical = self.tab_bar_placement == TabBarPlacement::Right;
 
         let read_only_toggle = |toggleable: bool| {
             IconButton::new("toggle_read_only", IconName::FileLock)
@@ -2920,6 +2937,7 @@ impl Pane {
         let capability = item.capability(cx);
         let can_toggle_read_only = item.read_only_toggle_buffer(cx).is_some();
         let tab = Tab::new(ix)
+            .vertical(is_vertical)
             .position(if is_first_item {
                 TabPosition::First
             } else if is_last_item {
@@ -2981,9 +2999,17 @@ impl Pane {
                     .border_0();
 
                 if ix < dragged_tab.ix {
-                    styled_tab = styled_tab.border_l_2();
+                    styled_tab = if is_vertical {
+                        styled_tab.border_t_2()
+                    } else {
+                        styled_tab.border_l_2()
+                    };
                 } else if ix > dragged_tab.ix {
-                    styled_tab = styled_tab.border_r_2();
+                    styled_tab = if is_vertical {
+                        styled_tab.border_b_2()
+                    } else {
+                        styled_tab.border_r_2()
+                    };
                 }
 
                 styled_tab
@@ -3484,6 +3510,10 @@ impl Pane {
             return gpui::Empty.into_any();
         }
 
+        if self.tab_bar_placement == TabBarPlacement::Right {
+            return self.render_vertical_tab_bar(window, cx);
+        }
+
         let focus_handle = self.focus_handle.clone();
 
         let navigate_backward = IconButton::new("navigate_backward", IconName::ArrowLeft)
@@ -3580,6 +3610,80 @@ impl Pane {
                 cx,
             )
         }
+    }
+
+    fn render_vertical_tab_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Pane>,
+    ) -> AnyElement {
+        let focus_handle = self.focus_handle.clone();
+        let mut tabs = self
+            .items
+            .iter()
+            .enumerate()
+            .zip(tab_details(&self.items, window, cx))
+            .map(|((ix, item), detail)| {
+                self.render_tab(ix, &**item, detail, &focus_handle, window, cx)
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let tab_count = tabs.len();
+        let unpinned_tabs = tabs.split_off(self.pinned_tab_count.min(tab_count));
+        let pinned_tabs = tabs;
+        let has_pinned_and_unpinned_tabs = !pinned_tabs.is_empty() && !unpinned_tabs.is_empty();
+
+        let border_color = cx.theme().colors().border;
+        let background = cx.theme().colors().tab_bar_background;
+        v_flex()
+            .id("vertical_tab_bar")
+            .flex_none()
+            .h_full()
+            .w(rems(10.))
+            .pt(DynamicSpacing::Base04.px(cx))
+            .border_l_1()
+            .border_color(border_color)
+            .bg(background)
+            .overflow_y_scroll()
+            .children(pinned_tabs)
+            .when(has_pinned_and_unpinned_tabs, |this| {
+                this.child(div().flex_none().w_full().h_px().bg(border_color))
+            })
+            .children(unpinned_tabs)
+            .child(self.render_tab_bar_drop_target(tab_count, cx))
+            .into_any_element()
+    }
+
+    fn render_floating_tab_bar_buttons(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Pane>,
+    ) -> Option<AnyElement> {
+        let render_tab_bar_buttons = self.render_tab_bar_buttons.clone();
+        let (start_buttons, end_buttons) = render_tab_bar_buttons(self, window, cx);
+        if start_buttons.is_none() && end_buttons.is_none() {
+            return None;
+        }
+
+        let colors = cx.theme().colors();
+        Some(
+            h_flex()
+                .absolute()
+                .top(DynamicSpacing::Base04.px(cx))
+                .right(DynamicSpacing::Base04.px(cx))
+                .gap(DynamicSpacing::Base02.rems(cx))
+                .p(DynamicSpacing::Base02.px(cx))
+                .rounded_md()
+                .border_1()
+                .border_color(colors.border_variant)
+                .bg(colors.elevated_surface_background)
+                // Faded so the content underneath stays readable until the pane is hovered.
+                .opacity(0.4)
+                .group_hover("", |style| style.opacity(1.))
+                .children(start_buttons)
+                .children(end_buttons)
+                .into_any_element(),
+        )
     }
 
     fn configure_tab_bar_start(
@@ -4426,7 +4530,7 @@ impl Render for Pane {
             .contribute_context(&mut key_context, cx);
 
         let should_display_tab_bar = self.should_display_tab_bar.clone();
-        let display_tab_bar = should_display_tab_bar(window, cx);
+        let display_tab_bar = should_display_tab_bar(self, window, cx);
         let Some(project) = self.project.upgrade() else {
             return div().track_focus(&self.focus_handle(cx));
         };
@@ -4598,14 +4702,20 @@ impl Render for Pane {
                     cx.propagate();
                 }
             }))
-            .when(self.active_item().is_some() && display_tab_bar, |pane| {
-                pane.child((self.render_tab_bar.clone())(self, window, cx))
-            })
-            .child({
+            .map(|pane| {
+                let tab_bar = (self.active_item().is_some() && display_tab_bar)
+                    .then(|| (self.render_tab_bar.clone())(self, window, cx));
+                let floating_tab_bar_buttons = (self.tab_bar_placement == TabBarPlacement::Right
+                    && self.show_tab_bar_buttons
+                    && self.active_item().is_some())
+                .then(|| self.render_floating_tab_bar_buttons(window, cx))
+                .flatten();
                 let has_worktrees = project.read(cx).visible_worktrees(cx).next().is_some();
-                // main content
-                div()
+                let main_content = div()
                     .flex_1()
+                    .when(self.tab_bar_placement == TabBarPlacement::Right, |div| {
+                        div.h_full()
+                    })
                     .relative()
                     .group("")
                     .overflow_hidden()
@@ -4654,6 +4764,7 @@ impl Render for Pane {
                         }
                         .focus_follows_mouse(self.focus_follows_mouse, cx)
                     })
+                    .children(floating_tab_bar_buttons)
                     .child(
                         // drag target
                         div()
@@ -4703,7 +4814,17 @@ impl Render for Pane {
                                     }
                                 }
                             }),
-                    )
+                    );
+                match self.tab_bar_placement {
+                    TabBarPlacement::Top => pane.children(tab_bar).child(main_content),
+                    TabBarPlacement::Right => pane.child(
+                        h_flex()
+                            .size_full()
+                            .overflow_hidden()
+                            .child(main_content)
+                            .children(tab_bar),
+                    ),
+                }
             })
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),

@@ -473,6 +473,9 @@ impl Render for BufferSearchBar {
             .id("buffer_search")
             .gap_2()
             .w_full()
+            .when(has_collapse_button, |this| {
+                this.pb(DynamicSpacing::Base06.rems(cx))
+            })
             .track_scroll(&self.scroll_handle)
             .key_context(key_context)
             .capture_action(cx.listener(Self::tab))

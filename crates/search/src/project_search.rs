@@ -3384,6 +3384,7 @@ impl Render for ProjectSearchBar {
         v_flex()
             .gap_2()
             .w_full()
+            .pb(DynamicSpacing::Base06.rems(cx))
             .key_context(key_context)
             .on_action(cx.listener(|this, _: &ToggleFocus, window, cx| {
                 this.move_focus_to_results(window, cx)

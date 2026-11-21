@@ -35,6 +35,7 @@ pub struct Tab {
     selected: bool,
     position: TabPosition,
     close_side: TabCloseSide,
+    vertical: bool,
     start_slot: Option<AnyElement>,
     end_slot: Option<AnyElement>,
     children: SmallVec<[AnyElement; 2]>,
@@ -50,6 +51,7 @@ impl Tab {
             selected: false,
             position: TabPosition::First,
             close_side: TabCloseSide::End,
+            vertical: false,
             start_slot: None,
             end_slot: None,
             children: SmallVec::new(),
@@ -63,6 +65,11 @@ impl Tab {
 
     pub fn close_side(mut self, close_side: TabCloseSide) -> Self {
         self.close_side = close_side;
+        self
+    }
+
+    pub fn vertical(mut self, vertical: bool) -> Self {
+        self.vertical = vertical;
         self
     }
 
@@ -140,6 +147,41 @@ impl RenderOnce for Tab {
                 TabCloseSide::Start => (end_slot, start_slot),
             }
         };
+
+        if self.vertical {
+            let colors = cx.theme().colors();
+            return self
+                .div
+                .w_full()
+                .h(DynamicSpacing::Base24.px(cx))
+                .flex_none()
+                .cursor_pointer()
+                .map(|this| {
+                    if self.selected {
+                        this.bg(colors.ghost_element_selected)
+                    } else {
+                        this.hover(|style| style.bg(colors.ghost_element_hover))
+                    }
+                })
+                .child(
+                    h_flex()
+                        .group("")
+                        .relative()
+                        .size_full()
+                        .px(DynamicSpacing::Base06.px(cx))
+                        .gap(DynamicSpacing::Base04.rems(cx))
+                        .text_color(text_color)
+                        .child(start_slot)
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .children(self.children),
+                        )
+                        .child(end_slot),
+                );
+        }
 
         self.div
             .h(Tab::container_height(cx))

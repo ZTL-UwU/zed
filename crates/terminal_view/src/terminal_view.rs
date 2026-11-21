@@ -487,12 +487,6 @@ impl TerminalView {
         self.rename_editor.is_some()
     }
 
-    pub fn rename_editor_is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.rename_editor
-            .as_ref()
-            .is_some_and(|editor| editor.focus_handle(cx).is_focused(window))
-    }
-
     fn finish_renaming(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.rename_editor.take() else {
             return;
@@ -1516,7 +1510,13 @@ impl Render for TerminalView {
                 div()
                     .id("terminal-view-container")
                     .size_full()
-                    .bg(cx.theme().colors().editor_background)
+                    // The scrollbar reserves its track even when there's nothing to scroll, but only
+                    // paints it alongside a thumb, so this background shows through the empty track.
+                    .bg(if content_mode.is_scrollable() {
+                        cx.theme().colors().terminal_background
+                    } else {
+                        cx.theme().colors().editor_background
+                    })
                     .when_some(self.background_corner_radii, |this, radii| {
                         this.rounded_tl(radii.top_left)
                             .rounded_tr(radii.top_right)
@@ -1550,7 +1550,7 @@ impl Render for TerminalView {
                                 .show_along(ScrollAxes::Vertical)
                                 .with_stable_track_along(
                                     ScrollAxes::Vertical,
-                                    colors.editor_background,
+                                    colors.terminal_background,
                                 )
                                 .tracked_scroll_handle(&self.scroll_handle),
                             window,

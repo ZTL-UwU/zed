@@ -63,7 +63,7 @@ use workspace::{
     },
 };
 use workspace::{
-    Pane, TabBarSettings, WorkspaceSettings,
+    Pane, WorkspaceSettings,
     item::{FollowEvent, ProjectItemKind},
     searchable::SearchOptions,
 };
@@ -1104,7 +1104,8 @@ impl Item for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        (!TabBarSettings::get_global(cx).show && ItemSettings::get_global(cx).file_icons)
+        ItemSettings::get_global(cx)
+            .file_icons
             .then(|| {
                 path_for_buffer(&self.buffer, 0, true, cx)
                     .and_then(|path| FileIcons::get_icon(Path::new(&*path), cx))
